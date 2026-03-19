@@ -53,16 +53,16 @@ policy:
   aux_loss_weight: 1.0
 
 dataloader:
-  batch_size: 64
+  batch_size: 2048
   num_workers: 8
   shuffle: True
   pin_memory: True
   persistent_workers: True
-  prefetch_factor: 4
+  prefetch_factor: 10
   drop_last: True
 
 val_dataloader:
-  batch_size: 64
+  batch_size: 2048
   num_workers: 8
   shuffle: False
   pin_memory: True
@@ -78,7 +78,7 @@ optimizer:
   weight_decay: 1.0e-6
 
 training:
-  device: "cuda:0"
+  device: "cuda:1"
   seed: 42
   debug: False
   resume: True
