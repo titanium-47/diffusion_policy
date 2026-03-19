@@ -75,7 +75,7 @@ class UwlabTrajectoryLowdimDataset(BaseLowdimDataset):
         traj_files = manifest.get("files", [])
         for traj_info in tqdm(traj_files, desc="Loading UWLab lowdim trajectories"):
             traj_path = dataset_dir / traj_info["file"]
-            traj_data = torch.load(traj_path, map_location="cpu", weights_only=False)
+            traj_data = torch.load(traj_path, map_location="cpu")
 
             actions = traj_data["actions"]
             if isinstance(actions, torch.Tensor):
