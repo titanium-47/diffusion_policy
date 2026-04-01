@@ -272,7 +272,9 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                         # sample trajectory from training set, and evaluate difference
                         batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
                         obs_dict = batch['obs']
-                        gt_action = batch['action'][:, policy.n_obs_steps-1]
+                        start = policy.n_obs_steps - 1
+                        end = start + policy.n_action_steps
+                        gt_action = batch['action'][:, start:end]
                         result = policy.predict_action(obs_dict)
                         pred_action = result['action']
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)

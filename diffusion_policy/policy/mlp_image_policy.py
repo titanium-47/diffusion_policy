@@ -20,7 +20,6 @@ class MLPImagePolicy(BaseImagePolicy):
             aux_loss_weight: float = 0.0,
             loss_type: str = "nll",
             **kwargs):
-        assert n_action_steps == 1, "MLPImagePolicy only supports n_action_steps=1"
         assert loss_type in ("nll", "kl"), f"loss_type must be 'nll' or 'kl', got '{loss_type}'"
         
         super().__init__()
@@ -37,6 +36,7 @@ class MLPImagePolicy(BaseImagePolicy):
         self.aux_loss_weight = aux_loss_weight
         self.loss_type = loss_type
         self.kwargs = kwargs
+        self.action_output_dim = n_action_steps * action_dim
         
         # Input: all obs steps concatenated
         input_dim = obs_feature_dim * n_obs_steps
@@ -50,8 +50,8 @@ class MLPImagePolicy(BaseImagePolicy):
         self.trunk = nn.Sequential(*layers)
         
         # Separate heads for mean and log std
-        self.mean_head = nn.Linear(last_dim, action_dim)
-        self.log_std_head = nn.Linear(last_dim, action_dim)
+        self.mean_head = nn.Linear(last_dim, self.action_output_dim)
+        self.log_std_head = nn.Linear(last_dim, self.action_output_dim)
         
         self.log_std_limits = (-5.0, 2.0)
 
@@ -71,9 +71,14 @@ class MLPImagePolicy(BaseImagePolicy):
     def get_trunk_features(self, obs_features: torch.Tensor) -> torch.Tensor:
         return self.trunk(obs_features)
 
+    def reshape_action_tensor(self, action_tensor: torch.Tensor) -> torch.Tensor:
+        return action_tensor.reshape(-1, self.n_action_steps, self.action_dim)
+
     def get_action_dist(self, h: torch.Tensor) -> Normal:
-        mean = self.mean_head(h)
-        log_std = self.log_std_head(h).clamp(min=self.log_std_limits[0], max=self.log_std_limits[1])
+        mean = self.reshape_action_tensor(self.mean_head(h))
+        log_std = self.reshape_action_tensor(self.log_std_head(h)).clamp(
+            min=self.log_std_limits[0], max=self.log_std_limits[1]
+        )
         return Normal(mean, torch.exp(log_std))
 
     def forward(self, obs_features: torch.Tensor) -> Normal:
@@ -85,8 +90,6 @@ class MLPImagePolicy(BaseImagePolicy):
         value = next(iter(nobs.values()))
         B, To = value.shape[:2]
         To = self.n_obs_steps
-        device = self.device
-        dtype = self.dtype
         # Encode obs: flatten all obs steps
         if isinstance(nobs, dict):
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
@@ -129,14 +132,15 @@ class MLPImagePolicy(BaseImagePolicy):
         h = self.get_trunk_features(mlp_input)
 
         # BC loss
-        assert Ta == 1, "MLPImagePolicy only supports n_action_steps=1"
         student_dist = self.get_action_dist(h)
+        start = To - 1
+        end = start + Ta
 
         if self.loss_type == "kl":
             assert 'expert_dist' in batch, \
                 "loss_type='kl' requires expert distribution data in dataset"
-            raw_mean = batch['expert_dist']['expert_action_mean'][:, To-1]
-            raw_std = batch['expert_dist']['expert_action_std'][:, To-1]
+            raw_mean = batch['expert_dist']['expert_action_mean'][:, start:end]
+            raw_std = batch['expert_dist']['expert_action_std'][:, start:end]
 
             norm_expert_mean = self.normalizer['action'].normalize(raw_mean)
             action_scale = self.normalizer['action'].params_dict['scale']
@@ -144,10 +148,10 @@ class MLPImagePolicy(BaseImagePolicy):
 
             expert_dist = Normal(norm_expert_mean, norm_expert_std)
             bc_loss = torch.distributions.kl_divergence(
-                expert_dist, student_dist).sum(dim=-1).mean()
+                expert_dist, student_dist).sum(dim=(-1, -2)).mean()
         else:
-            target = nactions[:, To-1:To+Ta-1].squeeze()
-            bc_loss = -student_dist.log_prob(target).sum(dim=-1).mean()
+            target = nactions[:, start:end]
+            bc_loss = -student_dist.log_prob(target).sum(dim=(-1, -2)).mean()
 
         # Auxiliary reconstruction loss (from encoder features, not trunk)
         aux_loss = torch.tensor(0.0, device=h.device)
