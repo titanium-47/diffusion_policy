@@ -26,6 +26,8 @@ shape_meta: &shape_meta
   action:
     shape: [7]   
 
+obs_dim: 37
+action_dim: 7
 task_name: &task_name sim2real_image
 
 env_runner:
@@ -55,4 +57,4 @@ dataset:
   val_ratio: 0.05
   use_cache: false
   use_disk: false
-  action_norm_mode: ${action_norm_mode}
+  # action_norm_mode: ${action_norm_mode}

@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: kitchen_lowdim_abs
+  - task: sim2real_state
 
 name: train_diffusion_transformer_lowdim
 _target_: diffusion_policy.workspace.train_diffusion_transformer_lowdim_workspace.TrainDiffusionTransformerLowdimWorkspace
@@ -18,6 +18,7 @@ past_action_visible: False
 keypoint_visible_rate: 1.0
 obs_as_cond: True
 pred_action_steps_only: False
+dataset_obs_steps: ${n_obs_steps}
 
 policy:
   _target_: diffusion_policy.policy.diffusion_transformer_lowdim_policy.DiffusionTransformerLowdimPolicy
@@ -99,13 +100,13 @@ training:
   lr_scheduler: cosine
   # Transformer needs LR warmup
   lr_warmup_steps: 1000
-  num_epochs: 5000
+  num_epochs: 50
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 50
+  checkpoint_every: 5
   val_every: 1
   sample_every: 5
   # steps per epoch
