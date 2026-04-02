@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - task: sim2real_state
+  - task: sim2real_state_privledged
 
-name: train_mlp_image_aux
+name: train_transformer_image_aux
 _target_: diffusion_policy.workspace.train_mlp_image_workspace.TrainMLPImageWorkspace
 output_dir: null
 
