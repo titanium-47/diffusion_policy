@@ -63,4 +63,6 @@ dataset:
   val_ratio: 0.05
   use_cache: false
   use_disk: false
+  add_returns: ${add_returns}
+  gamma: ${gamma}
   # action_norm_mode: ${action_norm_mode}

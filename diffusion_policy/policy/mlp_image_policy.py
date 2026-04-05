@@ -109,6 +109,31 @@ class MLPImagePolicy(BaseImagePolicy):
             'action_pred': action_pred
         }
 
+    def predict_k_actions(self, obs_dict: Dict[str, torch.Tensor], k: int) -> Dict[str, torch.Tensor]:
+        assert 'past_action' not in obs_dict
+        nobs = self.normalizer.normalize(obs_dict)
+        value = next(iter(nobs.values()))
+        B, To = value.shape[:2]
+        To = self.n_obs_steps
+        # Encode obs: flatten all obs steps
+        if isinstance(nobs, dict):
+            this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
+        else:
+            this_nobs = nobs[:,:To,...].reshape(-1,*nobs.shape[2:])
+        nobs_features = self.obs_encoder(this_nobs)
+        nobs_features = nobs_features.reshape(B, To, -1)
+        mlp_input = nobs_features.reshape(B, -1)
+
+        # Get action distribution
+        dist = self.forward(mlp_input)
+        action_preds = dist.sample((k,))
+        # action_pred = dist.rsample()
+        actions = self.normalizer['action'].unnormalize(action_preds)
+        return {
+            'actions': actions,
+            'action_preds': action_preds
+        }
+
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
 

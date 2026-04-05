@@ -49,6 +49,16 @@ class CustomWeightedRandomSampler(torch.utils.data.WeightedRandomSampler):
         return iter(rand_tensor.tolist())
 
 
+def _compute_return_to_go(rewards: np.ndarray, gamma: float) -> np.ndarray:
+    rewards = np.asarray(rewards, dtype=np.float32).reshape(-1)
+    returns = np.empty_like(rewards, dtype=np.float32)
+    running = 0.0
+    for t in range(rewards.shape[0] - 1, -1, -1):
+        running = float(rewards[t]) + gamma * running
+        returns[t] = running
+    return returns
+
+
 class Sim2RealImageDataset(BaseImageDataset):
     def __init__(
         self,
@@ -63,16 +73,23 @@ class Sim2RealImageDataset(BaseImageDataset):
         val_ratio=0.0,
         use_cache: bool = False,
         use_disk: bool = True,
+        add_returns: bool = False,
+        gamma: float = 0.97,
         action_norm_mode: str = "limits",
     ):
         super().__init__()
         self.action_norm_mode = action_norm_mode
+        self.dataset_path = dataset_path
+        self.add_returns = add_returns
+        self.gamma = float(gamma)
         assert os.path.isdir(dataset_path)
         print("shape_meta: ", shape_meta)
         # Load data and create replay buffer
         self.replay_buffer = self._create_replay_buffer_from_zarr(
             dataset_path, shape_meta=shape_meta, use_cache=use_cache,
             use_disk=use_disk)
+        if self.add_returns:
+            self._compute_returns()
 
         # replay_buffer = None
         # if use_cache:
@@ -164,6 +181,57 @@ class Sim2RealImageDataset(BaseImageDataset):
         self.val_mask = val_mask
         self.train_mask = train_mask
 
+    def _compute_returns(self, replay_buffer=None):
+        replay_buffer = self.replay_buffer if replay_buffer is None else replay_buffer
+        if replay_buffer is None:
+            raise ValueError("Replay buffer must be available to compute returns.")
+
+        n_steps = int(replay_buffer.n_steps)
+        data_root = replay_buffer.root['data']
+        meta_root = replay_buffer.root['meta']
+        cached_returns = data_root['returns_to_go'] if 'returns_to_go' in data_root else None
+        cached_gamma = meta_root['return_to_go_gamma'] if 'return_to_go_gamma' in meta_root else None
+
+        gamma_value = None
+        if cached_gamma is not None:
+            try:
+                gamma_value = float(np.asarray(cached_gamma).reshape(()))
+            except (TypeError, ValueError):
+                gamma_value = None
+
+        if cached_returns is not None:
+            cached_shape = tuple(getattr(cached_returns, 'shape', ()))
+            if cached_shape == (n_steps,) and gamma_value is not None and np.isclose(gamma_value, self.gamma):
+                return
+
+        if 'rewards' in replay_buffer:
+            rewards = np.asarray(replay_buffer['rewards'], dtype=np.float32).reshape(-1)
+        else:
+            rewards = np.zeros((n_steps,), dtype=np.float32)
+
+        returns = np.zeros((n_steps,), dtype=np.float32)
+        start = 0
+        for end in np.asarray(replay_buffer.episode_ends, dtype=np.int64):
+            end = int(end)
+            returns[start:end] = _compute_return_to_go(rewards[start:end], gamma=self.gamma)
+            start = end
+
+        if cached_returns is not None and isinstance(cached_returns, zarr.Array) and tuple(cached_returns.shape) == tuple(returns.shape):
+            cached_returns[:] = returns
+        else:
+            if 'returns_to_go' in data_root and isinstance(data_root, zarr.Group):
+                del data_root['returns_to_go']
+            data_root['returns_to_go'] = returns
+
+        gamma_array = np.array(self.gamma, dtype=np.float32)
+        if cached_gamma is not None and isinstance(cached_gamma, zarr.Array) and tuple(cached_gamma.shape) == tuple(gamma_array.shape):
+            cached_gamma[...] = gamma_array
+        else:
+            if 'return_to_go_gamma' in meta_root and isinstance(meta_root, zarr.Group):
+                del meta_root['return_to_go_gamma']
+            meta_root['return_to_go_gamma'] = gamma_array
+
+
     def _create_replay_buffer_from_zarr(
             self, dataset_path, shape_meta, use_cache=False, use_disk=True):
         """Create replay buffer from zarr data with caching and memory options."""
@@ -179,7 +247,9 @@ class Sim2RealImageDataset(BaseImageDataset):
                 'dataset_path': dataset_path,
                 'dataset_mtime': dataset_stat.st_mtime,
                 'dataset_size': dataset_stat.st_size,
-                'use_disk': use_disk
+                'use_disk': use_disk,
+                'add_returns': self.add_returns,
+                'gamma': self.gamma if self.add_returns else None,
             }
             cache_fingerprint_json = json.dumps(
                 cache_fingerprint, sort_keys=True)
@@ -199,6 +269,8 @@ class Sim2RealImageDataset(BaseImageDataset):
                         # Always load to memory for caching
                         replay_buffer = self._load_zarr_data(
                             dataset_path, use_disk=False)
+                        if self.add_returns:
+                            self._compute_returns(replay_buffer=replay_buffer)
                         print('Saving cache to disk.')
                         with zarr.ZipStore(cache_zarr_path) as zip_store:
                             replay_buffer.save_to_store(store=zip_store)
@@ -232,6 +304,8 @@ class Sim2RealImageDataset(BaseImageDataset):
             # No caching, load directly
             replay_buffer = self._load_zarr_data(
                 dataset_path, use_disk=use_disk)
+            if self.add_returns:
+                self._compute_returns(replay_buffer=replay_buffer)
 
         return replay_buffer
 
@@ -256,6 +330,11 @@ class Sim2RealImageDataset(BaseImageDataset):
 
         # Always load to memory as it's small
         replay_buffer.root['data']['action'] = action_arr[:]
+        if 'rewards' in z['data']:
+            if use_disk:
+                replay_buffer.root['data']['rewards'] = z['data']['rewards']
+            else:
+                replay_buffer.root['data']['rewards'] = z['data']['rewards'][:]
         replay_buffer.root['meta']['episode_ends'] = episode_ends[:]
 
         return replay_buffer
@@ -333,6 +412,9 @@ class Sim2RealImageDataset(BaseImageDataset):
             torch_data['auxiliary_obs'] = dict_apply(aux_dict, torch.from_numpy)
         if expert_dist:
             torch_data['expert_dist'] = dict_apply(expert_dist, torch.from_numpy)
+        if self.add_returns:
+            torch_data['returns_to_go'] = torch.from_numpy(
+                data['returns_to_go'].astype(np.float32))
         return torch_data
 
 
@@ -469,6 +551,8 @@ class StreamingMultiDataset(BaseImageDataset):
         use_disk: bool = False,
         samples_per_file_multiplier: float = 1.0,
         action_norm_mode: str = "limits",
+        add_returns: bool = False,
+        gamma: float = 0.97,
     ):
         super().__init__()
 
@@ -491,6 +575,8 @@ class StreamingMultiDataset(BaseImageDataset):
             'use_cache': use_cache,
             'use_disk': use_disk,
             'action_norm_mode': action_norm_mode,
+            'add_returns': add_returns,
+            'gamma': gamma,
         }
 
         # Calculate total epoch length and normalizer from all files in one pass
@@ -710,6 +796,8 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         use_streaming: bool = False,
         samples_per_file_multiplier: float = 1.0,
         action_norm_mode: str = "limits",
+        add_returns: bool = False,
+        gamma: float = 0.97,
     ):
         super().__init__()
 
@@ -767,6 +855,8 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
                 use_disk=use_disk,
                 samples_per_file_multiplier=samples_per_file_multiplier,
                 action_norm_mode=action_norm_mode,
+                add_returns=add_returns,
+                gamma=gamma,
             )
             self.is_streaming = True
             return
@@ -795,6 +885,8 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
             'use_cache': use_cache,
             'use_disk': use_disk,
             'action_norm_mode': action_norm_mode,
+            'add_returns': add_returns,
+            'gamma': gamma,
         }
 
         for config in self.dataset_config:

@@ -1,0 +1,52 @@
+name: sim2real_q_image
+
+shape_meta: &shape_meta
+  obs:
+    end_effector_pose:
+      shape: [6]
+      type: low_dim
+    arm_joint_pos:
+      shape: [6]
+      type: low_dim
+    last_arm_action:
+      shape: [6]
+      type: low_dim
+    last_gripper_action:
+      shape: [1]
+      type: low_dim
+    insertive_asset_pose:
+      shape: [6]
+      type: low_dim
+    receptive_asset_pose:
+      shape: [6]
+      type: low_dim
+    insertive_asset_in_receptive_asset_frame:
+      shape: [6]
+      type: low_dim
+      
+
+  action:
+    shape: [7]
+   
+task_name: &task_name sim2real_q_image
+
+env_runner:
+  _target_: diffusion_policy.env_runner.dummy_runner.DummyRunner
+
+dataset:
+  _target_: diffusion_policy.dataset.sim2real_q_image_dataset.Sim2RealImageQMultiDataset
+  dataset_dir: ../datasets_test
+  use_streaming: false
+  samples_per_file_multiplier: 1.0
+  shape_meta: *shape_meta
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: 0
+  n_obs_steps: ${dataset_obs_steps}
+  n_latency_steps: 0
+  seed: 42
+  val_ratio: 0.05
+  use_cache: false
+  use_disk: false
+  action_norm_mode: ${action_norm_mode}
+  gamma: ${gamma}

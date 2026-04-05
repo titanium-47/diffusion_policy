@@ -1,0 +1,121 @@
+defaults:
+  - _self_
+  - task: sim2real_state_privledged
+
+name: train_q_image
+_target_: diffusion_policy.workspace.train_q_image_workspace.TrainQImageWorkspace
+output_dir: null
+
+task_name: ${task.name}
+shape_meta: ${task.shape_meta}
+exp_name: "default"
+
+horizon: 12
+n_obs_steps: 4
+n_action_steps: 8
+n_latency_steps: 0
+dataset_obs_steps: ${n_obs_steps}
+gamma: 0.97
+action_norm_mode: gaussian
+add_returns: True
+
+policy:
+  _target_: diffusion_policy.policy.q_image_policy.QImagePolicy
+  shape_meta: ${shape_meta}
+  obs_encoder:
+    _target_: diffusion_policy.model.vision.multi_image_obs_encoder.MultiImageObsEncoder
+    shape_meta: ${shape_meta}
+    rgb_model:
+      _target_: diffusion_policy.model.vision.model_getter.get_resnet
+      name: resnet18
+      weights: IMAGENET1K_V1
+    resize_shape: null
+    crop_shape: null
+    random_crop: False
+    use_group_norm: True
+    share_rgb_model: False
+    imagenet_norm: True
+    extra_randomizations:
+      - name: ColorJitter
+        params: {brightness: 0.1, contrast: 0.1, saturation: 0.1, hue: 0.05}
+      - name: GaussianBlur
+        params: {kernel_size: 5, sigma: [0.1, 2.0]}
+      - name: RandomGrayscale
+        params: {p: 0.05}
+      - name: GaussianNoise
+        params: {std: 0.01}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  value_hidden_dims: [512, 256, 128, 64]
+  q_hidden_dims: [512, 256, 128, 64]
+
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  shuffle: True
+  pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4
+  drop_last: True
+
+val_dataloader:
+  batch_size: 64
+  num_workers: 8
+  shuffle: False
+  pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4
+  drop_last: False
+
+value_optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+q_optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+training:
+  device: "cuda:0"
+  seed: 42
+  debug: False
+  resume: True
+  value_epochs: 100
+  q_epochs: 100
+  gradient_clip_norm: 1.0
+  checkpoint_every: 50
+  max_train_steps: null
+  max_val_steps: null
+  tqdm_interval_sec: 1.0
+
+logging:
+  project: q_function_sim2real_image
+  resume: True
+  mode: online
+  name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+  tags: ["${name}", "${task_name}", "${exp_name}"]
+  id: null
+  group: null
+
+checkpoint:
+  save_last_ckpt: True
+  save_last_snapshot: False
+
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    subdir: ${hydra.job.num}

@@ -250,6 +250,7 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                 if (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_losses = list()
+                        val_mse_losses = list()
                         with tqdm.tqdm(val_dataloader, desc=f"Validation epoch {self.epoch}", 
                                 leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
@@ -259,12 +260,21 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                                     val_losses.append(loss_output['loss'].item())
                                 else:
                                     val_losses.append(loss_output.item())
+                                obs_dict = batch['obs']
+                                start = policy.n_obs_steps - 1
+                                end = start + policy.n_action_steps
+                                gt_action = batch['action'][:, start:end]
+                                result = policy.predict_action(obs_dict)
+                                pred_action = result['action']
+                                val_mse_losses.append(torch.nn.functional.mse_loss(pred_action, gt_action).item())
                                 if (cfg.training.max_val_steps is not None) \
                                     and batch_idx >= (cfg.training.max_val_steps-1):
                                     break
                         if len(val_losses) > 0:
                             val_loss = np.mean(val_losses)
                             step_log['val_loss'] = val_loss
+                        if len(val_mse_losses) > 0:
+                            step_log['val_mse_loss'] = np.mean(val_mse_losses)
 
                 # run sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
