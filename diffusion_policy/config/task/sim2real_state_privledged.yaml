@@ -43,6 +43,7 @@ dataset:
   _target_: diffusion_policy.dataset.sim2real_image_dataset.Sim2RealImageMultiDataset
   # Option 1: Single dataset directory (backward compatible)
   dataset_dir: ../datasets_test
+  abs_action: false
   
   # Option 2: Multiple dataset directories with sampling ratios
   # dataset_config:

@@ -22,6 +22,7 @@ from diffusion_policy.common.sampler import SequenceSampler, get_val_mask
 from diffusion_policy.model.common.normalizer import (
     LinearNormalizer, SingleFieldLinearNormalizer)
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
+from diffusion_policy.dataset.utils import pose_axis_angle_to_pos_quat, process_actions
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -76,9 +77,11 @@ class Sim2RealImageDataset(BaseImageDataset):
         add_returns: bool = False,
         gamma: float = 0.97,
         action_norm_mode: str = "limits",
+        abs_action: bool = False,
     ):
         super().__init__()
         self.action_norm_mode = action_norm_mode
+        self.abs_action = abs_action
         self.dataset_path = dataset_path
         self.add_returns = add_returns
         self.gamma = float(gamma)
@@ -250,6 +253,7 @@ class Sim2RealImageDataset(BaseImageDataset):
                 'use_disk': use_disk,
                 'add_returns': self.add_returns,
                 'gamma': self.gamma if self.add_returns else None,
+                'abs_action': self.abs_action,
             }
             cache_fingerprint_json = json.dumps(
                 cache_fingerprint, sort_keys=True)
@@ -328,8 +332,22 @@ class Sim2RealImageDataset(BaseImageDataset):
                 # Load into memory
                 replay_buffer.root['data'][key] = obs_group[key][:]
 
-        # Always load to memory as it's small
-        replay_buffer.root['data']['action'] = action_arr[:]
+        # Always load actions to memory as they're small.
+        action_data = action_arr[:]
+        if self.abs_action:
+            print("Converting relative actions to absolute actions...")
+            if 'end_effector_pose' not in obs_group:
+                raise ValueError("Absolute action conversion requires 'end_effector_pose' in observations.")
+            ref_pose = torch.from_numpy(obs_group['end_effector_pose'][:]).to(dtype=torch.float32)
+            ref_pos, ref_quat = pose_axis_angle_to_pos_quat(ref_pose)
+            abs_pos, abs_quat = process_actions(
+                torch.from_numpy(action_data[:, :6]).to(dtype=torch.float32),
+                ref_pos,
+                ref_quat,
+            )
+            gripper_action = torch.from_numpy(action_data[:, 6:]).to(dtype=torch.float32)
+            action_data = torch.cat([abs_pos, abs_quat, gripper_action], dim=-1).cpu().numpy()
+        replay_buffer.root['data']['action'] = action_data
         if 'rewards' in z['data']:
             if use_disk:
                 replay_buffer.root['data']['rewards'] = z['data']['rewards']
@@ -553,6 +571,7 @@ class StreamingMultiDataset(BaseImageDataset):
         action_norm_mode: str = "limits",
         add_returns: bool = False,
         gamma: float = 0.97,
+        abs_action: bool = False,
     ):
         super().__init__()
 
@@ -577,6 +596,7 @@ class StreamingMultiDataset(BaseImageDataset):
             'action_norm_mode': action_norm_mode,
             'add_returns': add_returns,
             'gamma': gamma,
+            'abs_action': abs_action,
         }
 
         # Calculate total epoch length and normalizer from all files in one pass
@@ -798,6 +818,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         action_norm_mode: str = "limits",
         add_returns: bool = False,
         gamma: float = 0.97,
+        abs_action: bool = False,
     ):
         super().__init__()
 
@@ -857,6 +878,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
                 action_norm_mode=action_norm_mode,
                 add_returns=add_returns,
                 gamma=gamma,
+                abs_action=abs_action,
             )
             self.is_streaming = True
             return
@@ -887,6 +909,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
             'action_norm_mode': action_norm_mode,
             'add_returns': add_returns,
             'gamma': gamma,
+            'abs_action': abs_action,
         }
 
         for config in self.dataset_config:

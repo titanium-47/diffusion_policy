@@ -86,8 +86,8 @@ training:
   seed: 42
   debug: False
   resume: True
-  value_epochs: 100
-  q_epochs: 100
+  value_epochs: 10
+  q_epochs: 10
   gradient_clip_norm: 1.0
   checkpoint_every: 50
   max_train_steps: null

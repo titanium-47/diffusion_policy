@@ -19,6 +19,8 @@ past_action_visible: False
 keypoint_visible_rate: 1.0
 obs_as_global_cond: True
 action_norm_mode: gaussian
+add_returns: false
+gamma: 0.97
 
 policy:
   _target_: diffusion_policy.policy.action_chunk_transformer_policy.ActionChunkTransformerPolicy
