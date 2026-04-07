@@ -86,6 +86,9 @@ training:
   seed: 42
   debug: False
   resume: True
+  # Path to a workspace .ckpt with trained value (e.g. .../checkpoints/value_best.ckpt).
+  # Loads obs_encoder, value_head, and normalizer. Ignored when resume loads a checkpoint.
+  preload_value_checkpoint: null
   value_epochs: 10
   q_epochs: 10
   gradient_clip_norm: 1.0

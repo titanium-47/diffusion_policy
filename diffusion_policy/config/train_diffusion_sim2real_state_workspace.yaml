@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: sim2real_state
+  - task: sim2real_state_privledged.yaml
 
 name: train_diffusion_unet_image_aux
 _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
@@ -18,7 +18,9 @@ dataset_obs_steps: ${n_obs_steps}
 past_action_visible: False
 keypoint_visible_rate: 1.0
 obs_as_global_cond: True
-action_norm_mode: gaussian
+action_norm_mode: gaussiandiffusion_policy/data/outputs/2026.04.06/15.44.12_train_mlp_image_aux_sim2real_state_privledged/checkpoints/step_0100000.ckpt
+add_returns: False
+gamma: 0.97
 
 policy:
   _target_: diffusion_policy.policy.diffusion_unet_image_policy.DiffusionUnetImagePolicy
@@ -104,7 +106,7 @@ training:
   use_ema: False
   freeze_encoder: False
   rollout_every: 5000
-  checkpoint_every: 50000
+  checkpoint_every: 20000
   val_every: 1
   sample_every: 1
   max_train_steps: null

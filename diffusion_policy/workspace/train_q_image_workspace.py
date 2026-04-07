@@ -16,6 +16,7 @@ import pathlib
 import random
 from typing import Any, Dict, Optional, cast
 
+import dill
 import hydra
 import numpy as np
 import torch
@@ -156,6 +157,37 @@ class TrainQImageWorkspace(BaseWorkspace):
 
     def _stage_checkpoint_path(self, stage: str, epoch: int) -> str:
         return os.path.join(self.output_dir, "checkpoints", f"{stage}_epoch_{epoch:04d}.ckpt")
+
+    def _load_pretrained_value_weights(self, ckpt_path: str) -> None:
+        """Load obs_encoder, value_head, and normalizer from another Q-training checkpoint.
+
+        Used to warm-start (or freeze via epochs/hyperparams) the value function before Q training.
+        Expects a standard workspace .ckpt with ``state_dicts['model']``.
+        """
+        path = pathlib.Path(ckpt_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"preload_value_checkpoint does not exist: {path}")
+
+        payload = torch.load(path.open("rb"), pickle_module=dill, map_location="cpu")
+        if "state_dicts" not in payload or "model" not in payload["state_dicts"]:
+            raise KeyError(f"Checkpoint at {path} has no state_dicts['model'] (not a workspace ckpt?)")
+
+        src_sd = payload["state_dicts"]["model"]
+        prefixes = ("obs_encoder.", "value_head.", "normalizer.")
+        filtered = {k: v for k, v in src_sd.items() if k.startswith(prefixes)}
+        if not filtered:
+            raise RuntimeError(f"No keys matching {prefixes} in {path}")
+
+        missing, unexpected = self.model.load_state_dict(filtered, strict=False)
+        if unexpected:
+            raise RuntimeError(f"Unexpected keys when loading value weights from {path}: {unexpected[:8]}")
+
+        value_missing = [k for k in missing if k.startswith(prefixes)]
+        if value_missing:
+            print(
+                f"[TrainQImageWorkspace] Warning: checkpoint missing {len(value_missing)} value-related "
+                f"params (shape/arch mismatch?). Examples: {value_missing[:5]}"
+            )
 
     def _build_training_dataset(self, cfg: Any) -> BaseImageDataset:
         if not bool(cfg.add_returns):
@@ -322,6 +354,15 @@ class TrainQImageWorkspace(BaseWorkspace):
         else:
             normalizer = dataset.get_normalizer()
             self.model.set_normalizer(normalizer)
+
+        preload_path = getattr(cfg.training, "preload_value_checkpoint", None)
+        if preload_path and not checkpoint_loaded:
+            self._load_pretrained_value_weights(str(preload_path))
+        elif preload_path and checkpoint_loaded:
+            print(
+                "[TrainQImageWorkspace] Skipping preload_value_checkpoint because training.resume "
+                "loaded a checkpoint (model state already restored)."
+            )
 
         device = torch.device(cfg.training.device)
         self.model.to(device)
