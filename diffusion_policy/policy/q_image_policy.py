@@ -102,6 +102,31 @@ class QImagePolicy(BaseImagePolicy):
         naction = self.normalizer["action"].normalize(action)
         return naction.reshape(naction.shape[0], -1)
 
+    def _extract_action_chunk(self, action: torch.Tensor) -> torch.Tensor:
+        start = self.n_obs_steps - 1
+        end = start + self.n_action_steps
+        if action.shape[1] < end:
+            raise ValueError(
+                f"Expected at least {end} action steps to extract the Q chunk, got {action.shape[1]}."
+            )
+        return action[:, start:end]
+
+    def _extract_return_target(self, batch: Dict[str, Any]) -> torch.Tensor:
+        if "returns" in batch:
+            returns = batch["returns"]
+            return returns.reshape(-1, 1)
+
+        returns_to_go = batch.get("returns_to_go")
+        if returns_to_go is None:
+            raise KeyError("Q/value training requires either 'returns' or 'returns_to_go' in the batch.")
+
+        return_idx = self.n_obs_steps - 1
+        if returns_to_go.shape[1] <= return_idx:
+            raise ValueError(
+                f"Expected returns_to_go to have at least {return_idx + 1} steps, got {returns_to_go.shape[1]}."
+            )
+        return returns_to_go[:, return_idx : return_idx + 1]
+
     def predict_value(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         return self.value_head(self.encode_state(obs_dict))
 
@@ -112,7 +137,7 @@ class QImagePolicy(BaseImagePolicy):
 
     def compute_value_loss(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         pred_values = self.predict_value(batch["obs"])
-        target_returns = batch["returns"].reshape(-1, 1)
+        target_returns = self._extract_return_target(batch)
         loss = F.mse_loss(pred_values, target_returns)
         return {
             "loss": loss,
@@ -123,13 +148,14 @@ class QImagePolicy(BaseImagePolicy):
 
     def compute_q_loss(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         state = self.encode_state(batch["obs"])
-        action_features = self._normalize_action(batch["action"])
+        action_chunk = self._extract_action_chunk(batch["action"])
+        action_features = self._normalize_action(action_chunk)
         pred_advantages = self.q_head(torch.cat([state, action_features], dim=1))
 
         with torch.no_grad():
-            next_values = self.predict_value(batch["next_obs"])
             current_values = self.value_head(state)
-            target_advantages = next_values - current_values
+            target_returns = self._extract_return_target(batch)
+            target_advantages = target_returns - current_values
 
         loss = F.mse_loss(pred_advantages, target_advantages)
         return {

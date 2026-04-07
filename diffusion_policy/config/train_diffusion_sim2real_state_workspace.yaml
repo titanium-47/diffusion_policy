@@ -21,6 +21,7 @@ obs_as_global_cond: True
 action_norm_mode: gaussiandiffusion_policy/data/outputs/2026.04.06/15.44.12_train_mlp_image_aux_sim2real_state_privledged/checkpoints/step_0100000.ckpt
 add_returns: False
 gamma: 0.97
+max_train_episodes: 200
 
 policy:
   _target_: diffusion_policy.policy.diffusion_unet_image_policy.DiffusionUnetImagePolicy

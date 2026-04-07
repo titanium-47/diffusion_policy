@@ -44,6 +44,7 @@ dataset:
   # Option 1: Single dataset directory (backward compatible)
   dataset_dir: ../datasets_test
   abs_action: false
+  max_train_episodes: ${max_train_episodes}
   
   # Option 2: Multiple dataset directories with sampling ratios
   # dataset_config:

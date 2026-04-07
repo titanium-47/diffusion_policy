@@ -14,7 +14,7 @@ import json
 import os
 import pathlib
 import random
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, cast
 
 import dill
 import hydra
@@ -32,71 +32,6 @@ from diffusion_policy.policy.q_image_policy import QImagePolicy
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
-
-
-def _slice_tensor_dict(
-    tensor_dict: Dict[str, torch.Tensor],
-    start: int,
-    end: int | None = None,
-) -> Dict[str, torch.Tensor]:
-    return {key: value[start:end] for key, value in tensor_dict.items()}
-
-
-class QImageDatasetAdapter(BaseImageDataset):
-    def __init__(
-        self,
-        base_dataset: BaseImageDataset,
-        n_obs_steps: int,
-        n_action_steps: int,
-    ):
-        super().__init__()
-        self.base_dataset = base_dataset
-        self.n_obs_steps = int(n_obs_steps)
-        self.n_action_steps = int(n_action_steps)
-        self.expected_sequence_length = self.n_obs_steps + self.n_action_steps
-        self.weighted_sampler = getattr(base_dataset, "weighted_sampler", None)
-
-    def __len__(self):
-        return len(self.base_dataset)
-
-    def get_validation_dataset(self):
-        return QImageDatasetAdapter(
-            base_dataset=cast(BaseImageDataset, self.base_dataset.get_validation_dataset()),
-            n_obs_steps=self.n_obs_steps,
-            n_action_steps=self.n_action_steps,
-        )
-
-    def get_normalizer(self, **kwargs):
-        return self.base_dataset.get_normalizer(**kwargs)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        sample = cast(Dict[str, Any], self.base_dataset[idx])
-        obs = cast(Dict[str, torch.Tensor], sample["obs"])
-        sequence_length = next(iter(obs.values())).shape[0]
-        if sequence_length < self.expected_sequence_length:
-            raise ValueError(
-                f"Expected at least {self.expected_sequence_length} timesteps, "
-                f"got {sequence_length}."
-            )
-
-        result = {
-            "obs": _slice_tensor_dict(obs, 0, self.n_obs_steps),
-            "next_obs": _slice_tensor_dict(
-                obs,
-                self.n_action_steps,
-                self.n_action_steps + self.n_obs_steps,
-            ),
-            "action": sample["action"][
-                self.n_obs_steps - 1 : self.n_obs_steps - 1 + self.n_action_steps
-            ],
-        }
-
-        returns_to_go = cast(Optional[torch.Tensor], sample.get("returns_to_go"))
-        if returns_to_go is None:
-            raise KeyError("Base dataset must provide returns_to_go for q-training.")
-        return_idx = self.n_obs_steps - 1
-        result["returns"] = returns_to_go[return_idx : return_idx + 1]
-        return result
 
 
 class TrainQImageWorkspace(BaseWorkspace):
@@ -189,33 +124,17 @@ class TrainQImageWorkspace(BaseWorkspace):
                 f"params (shape/arch mismatch?). Examples: {value_missing[:5]}"
             )
 
-    def _build_training_dataset(self, cfg: Any) -> BaseImageDataset:
-        if not bool(cfg.add_returns):
-            raise ValueError("Q-image training requires add_returns=True.")
+    def _metrics_to_float(self, metrics: Dict[str, Any]) -> Dict[str, float]:
+        result: Dict[str, float] = {}
+        for key, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                result[key] = float(value.detach().item())
+            elif isinstance(value, (float, int)):
+                result[key] = float(value)
+        return result
 
-        dataset_cfg = OmegaConf.create(
-            OmegaConf.to_container(cfg.task.dataset, resolve=True)
-        )
-        dataset_cfg._target_ = (
-            "diffusion_policy.dataset.sim2real_image_dataset.Sim2RealImageMultiDataset"
-        )
-        dataset_cfg.horizon = int(cfg.n_obs_steps) + int(cfg.n_action_steps)
-        dataset_cfg.pad_before = 0
-        dataset_cfg.pad_after = 0
-        dataset_cfg.n_obs_steps = None
-        dataset_cfg.n_latency_steps = 0
-        dataset_cfg.add_returns = bool(cfg.add_returns)
-        dataset_cfg.gamma = float(cfg.gamma)
-
-        dataset = hydra.utils.instantiate(dataset_cfg)
-        if not isinstance(dataset, BaseImageDataset):
-            raise TypeError("Instantiated image dataset does not implement BaseImageDataset.")
-
-        return QImageDatasetAdapter(
-            base_dataset=dataset,
-            n_obs_steps=int(cfg.n_obs_steps),
-            n_action_steps=int(cfg.n_action_steps),
-        )
+    def _prefix_metrics(self, stage: str, split: str, metrics: Dict[str, float]) -> Dict[str, float]:
+        return {f"{stage}/{split}_{key}": value for key, value in metrics.items()}
 
     def _maybe_save_checkpoint(self, stage: str, epoch: int):
         cfg = cast(Any, self.cfg)
@@ -232,7 +151,7 @@ class TrainQImageWorkspace(BaseWorkspace):
         optimizer: torch.optim.Optimizer,
         stage: str,
         max_train_steps: int | None = None,
-    ) -> float:
+    ) -> Dict[str, float]:
         if stage == "value":
             self.model.set_value_training_mode()
             compute_loss = self.model.compute_value_loss
@@ -240,7 +159,8 @@ class TrainQImageWorkspace(BaseWorkspace):
             self.model.set_q_training_mode()
             compute_loss = self.model.compute_q_loss
 
-        train_losses = []
+        metric_totals: Dict[str, float] = {}
+        num_batches = 0
         self.model.to(device)
 
         with tqdm.tqdm(
@@ -252,6 +172,7 @@ class TrainQImageWorkspace(BaseWorkspace):
             for batch_idx, batch in enumerate(tepoch):
                 batch = self._move_batch_to_device(batch, device)
                 loss_output = compute_loss(batch)
+                metrics = self._metrics_to_float(loss_output)
                 loss = loss_output["loss"]
 
                 optimizer.zero_grad(set_to_none=True)
@@ -264,15 +185,19 @@ class TrainQImageWorkspace(BaseWorkspace):
                     )
                 optimizer.step()
 
-                loss_cpu = float(loss.item())
-                train_losses.append(loss_cpu)
+                loss_cpu = metrics["loss"]
+                for key, value in metrics.items():
+                    metric_totals[key] = metric_totals.get(key, 0.0) + value
+                num_batches += 1
                 tepoch.set_postfix(loss=loss_cpu, refresh=False)
                 self.global_step += 1
 
                 if max_train_steps is not None and batch_idx >= (max_train_steps - 1):
                     break
 
-        return float(np.mean(train_losses)) if train_losses else 0.0
+        if num_batches == 0:
+            return {"loss": 0.0}
+        return {key: value / num_batches for key, value in metric_totals.items()}
 
     def _evaluate(
         self,
@@ -280,7 +205,7 @@ class TrainQImageWorkspace(BaseWorkspace):
         device: torch.device,
         stage: str,
         max_val_steps: int | None = None,
-    ) -> float:
+    ) -> Dict[str, float]:
         if stage == "value":
             self.model.set_value_training_mode()
             compute_loss = self.model.compute_value_loss
@@ -288,7 +213,8 @@ class TrainQImageWorkspace(BaseWorkspace):
             self.model.set_q_training_mode()
             compute_loss = self.model.compute_q_loss
 
-        val_losses = []
+        metric_totals: Dict[str, float] = {}
+        num_batches = 0
         self.model.eval()
         with torch.no_grad():
             with tqdm.tqdm(
@@ -300,11 +226,16 @@ class TrainQImageWorkspace(BaseWorkspace):
                 for batch_idx, batch in enumerate(tepoch):
                     batch = self._move_batch_to_device(batch, device)
                     loss_output = compute_loss(batch)
-                    val_losses.append(float(loss_output["loss"].item()))
+                    metrics = self._metrics_to_float(loss_output)
+                    for key, value in metrics.items():
+                        metric_totals[key] = metric_totals.get(key, 0.0) + value
+                    num_batches += 1
                     if max_val_steps is not None and batch_idx >= (max_val_steps - 1):
                         break
 
-        return float(np.mean(val_losses)) if val_losses else 0.0
+        if num_batches == 0:
+            return {"loss": 0.0}
+        return {key: value / num_batches for key, value in metric_totals.items()}
 
     def _write_metrics(self):
         metrics_path = os.path.join(self.output_dir, "q_training_metrics.json")
@@ -326,6 +257,8 @@ class TrainQImageWorkspace(BaseWorkspace):
     def run(self):
         cfg = cast(Any, copy.deepcopy(self.cfg))
         os.makedirs(self.output_dir, exist_ok=True)
+        if not bool(cfg.add_returns):
+            raise ValueError("Q-image training requires add_returns=True.")
 
         checkpoint_loaded = False
         if cfg.training.resume:
@@ -334,7 +267,9 @@ class TrainQImageWorkspace(BaseWorkspace):
                 self.load_checkpoint(path=latest_ckpt_path)
                 checkpoint_loaded = True
 
-        dataset = self._build_training_dataset(cfg)
+        dataset = hydra.utils.instantiate(cfg.task.dataset)
+        if not isinstance(dataset, BaseImageDataset):
+            raise TypeError("Instantiated image dataset does not implement BaseImageDataset.")
 
         dataloader_kwargs = self._sanitize_dataloader_kwargs(dict(cfg.dataloader))
         weighted_sampler = getattr(dataset, "weighted_sampler", None)
@@ -404,11 +339,11 @@ class TrainQImageWorkspace(BaseWorkspace):
                     )
 
                     self.value_epoch = epoch
-                    self.history["value_train_loss"].append(train_loss)
-                    self.history["value_val_loss"].append(val_loss)
+                    self.history["value_train_loss"].append(train_loss["loss"])
+                    self.history["value_val_loss"].append(val_loss["loss"])
 
-                    if val_loss < self.best_value_val_loss:
-                        self.best_value_val_loss = val_loss
+                    if val_loss["loss"] < self.best_value_val_loss:
+                        self.best_value_val_loss = val_loss["loss"]
                         self.save_checkpoint(
                             path=self._best_checkpoint_path("value"),
                             use_thread=False,
@@ -418,9 +353,9 @@ class TrainQImageWorkspace(BaseWorkspace):
                         "stage": "value",
                         "epoch": epoch,
                         "global_step": self.global_step,
-                        "train_loss": train_loss,
-                        "val_loss": val_loss,
-                        "best_value_val_loss": self.best_value_val_loss,
+                        **self._prefix_metrics("value", "train", train_loss),
+                        **self._prefix_metrics("value", "val", val_loss),
+                        "value/best_val_loss": self.best_value_val_loss,
                     }
                     wandb_run.log(step_log, step=self.global_step)
                     json_logger.log(step_log)
@@ -450,11 +385,11 @@ class TrainQImageWorkspace(BaseWorkspace):
                     )
 
                     self.q_epoch = epoch
-                    self.history["q_train_loss"].append(train_loss)
-                    self.history["q_val_loss"].append(val_loss)
+                    self.history["q_train_loss"].append(train_loss["loss"])
+                    self.history["q_val_loss"].append(val_loss["loss"])
 
-                    if val_loss < self.best_q_val_loss:
-                        self.best_q_val_loss = val_loss
+                    if val_loss["loss"] < self.best_q_val_loss:
+                        self.best_q_val_loss = val_loss["loss"]
                         self.save_checkpoint(
                             path=self._best_checkpoint_path("q"),
                             use_thread=False,
@@ -464,9 +399,9 @@ class TrainQImageWorkspace(BaseWorkspace):
                         "stage": "q",
                         "epoch": epoch,
                         "global_step": self.global_step,
-                        "train_loss": train_loss,
-                        "val_loss": val_loss,
-                        "best_q_val_loss": self.best_q_val_loss,
+                        **self._prefix_metrics("q", "train", train_loss),
+                        **self._prefix_metrics("q", "val", val_loss),
+                        "q/best_val_loss": self.best_q_val_loss,
                     }
                     wandb_run.log(step_log, step=self.global_step)
                     json_logger.log(step_log)
@@ -481,7 +416,7 @@ class TrainQImageWorkspace(BaseWorkspace):
 @hydra.main(
     version_base=None,
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")),
-    config_name="train_q_sim2real_image_workspace",
+    config_name="train_q_sim2real_state_workspace",
 )
 def main(cfg):
     workspace = TrainQImageWorkspace(cfg)

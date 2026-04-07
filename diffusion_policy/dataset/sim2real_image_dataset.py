@@ -18,7 +18,8 @@ from threadpoolctl import threadpool_limits
 from omegaconf import OmegaConf
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.common.sampler import SequenceSampler, get_val_mask
+from diffusion_policy.common.sampler import (
+    SequenceSampler, get_val_mask, downsample_mask)
 from diffusion_policy.model.common.normalizer import (
     LinearNormalizer, SingleFieldLinearNormalizer)
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
@@ -72,6 +73,7 @@ class Sim2RealImageDataset(BaseImageDataset):
         n_latency_steps=0,
         seed=42,
         val_ratio=0.0,
+        max_train_episodes=None,
         use_cache: bool = False,
         use_disk: bool = True,
         add_returns: bool = False,
@@ -162,6 +164,10 @@ class Sim2RealImageDataset(BaseImageDataset):
             val_ratio=val_ratio,
             seed=seed)
         train_mask = ~val_mask
+        train_mask = downsample_mask(
+            mask=train_mask,
+            max_n=max_train_episodes,
+            seed=seed)
 
         # Create sampler
         self.sampler = SequenceSampler(
@@ -565,6 +571,7 @@ class StreamingMultiDataset(BaseImageDataset):
         n_latency_steps=0,
         seed=42,
         val_ratio=0.0,
+        max_train_episodes=None,
         use_cache: bool = False,
         use_disk: bool = False,
         samples_per_file_multiplier: float = 1.0,
@@ -591,6 +598,7 @@ class StreamingMultiDataset(BaseImageDataset):
             'n_latency_steps': n_latency_steps,
             'seed': seed,
             'val_ratio': val_ratio,
+            'max_train_episodes': max_train_episodes,
             'use_cache': use_cache,
             'use_disk': use_disk,
             'action_norm_mode': action_norm_mode,
@@ -811,6 +819,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         n_latency_steps=0,
         seed=42,
         val_ratio=0.0,
+        max_train_episodes=None,
         use_cache: bool = True,
         use_disk: bool = True,
         use_streaming: bool = False,
@@ -872,6 +881,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
                 n_latency_steps=n_latency_steps,
                 seed=seed,
                 val_ratio=val_ratio,
+                max_train_episodes=max_train_episodes,
                 use_cache=use_cache,
                 use_disk=use_disk,
                 samples_per_file_multiplier=samples_per_file_multiplier,
@@ -904,6 +914,7 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
             'n_latency_steps': n_latency_steps,
             'seed': seed,
             'val_ratio': val_ratio,
+            'max_train_episodes': max_train_episodes,
             'use_cache': use_cache,
             'use_disk': use_disk,
             'action_norm_mode': action_norm_mode,
