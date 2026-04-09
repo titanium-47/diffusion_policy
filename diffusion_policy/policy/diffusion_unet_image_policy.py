@@ -185,6 +185,27 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         }
         return result
 
+    def predict_k_actions(self, obs_dict: Dict[str, torch.Tensor], k: int) -> Dict[str, torch.Tensor]:
+        assert 'past_action' not in obs_dict  # not implemented yet
+
+        value = next(iter(obs_dict.values()))
+        batch_size = value.shape[0]
+
+        repeated_obs = dict_apply(
+            obs_dict, lambda x: x.repeat_interleave(k, dim=0)
+        )
+        result = self.predict_action(repeated_obs)
+
+        actions = result['action'].reshape(batch_size, k, *result['action'].shape[1:]).movedim(1, 0)
+        action_preds = result['action_pred'].reshape(
+            batch_size, k, *result['action_pred'].shape[1:]
+        ).movedim(1, 0)
+
+        return {
+            'actions': actions,
+            'action_preds': action_preds
+        }
+
     # ========= training  ============
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
