@@ -198,6 +198,8 @@ class Sim2RealImageDataset(BaseImageDataset):
         n_steps = int(replay_buffer.n_steps)
         data_root = replay_buffer.root['data']
         meta_root = replay_buffer.root['meta']
+        if 'rewards' not in replay_buffer:
+            data_root['rewards'] = np.zeros((n_steps,), dtype=np.float32)
         cached_returns = data_root['returns_to_go'] if 'returns_to_go' in data_root else None
         cached_gamma = meta_root['return_to_go_gamma'] if 'return_to_go_gamma' in meta_root else None
 
@@ -213,10 +215,7 @@ class Sim2RealImageDataset(BaseImageDataset):
             if cached_shape == (n_steps,) and gamma_value is not None and np.isclose(gamma_value, self.gamma):
                 return
 
-        if 'rewards' in replay_buffer:
-            rewards = np.asarray(replay_buffer['rewards'], dtype=np.float32).reshape(-1)
-        else:
-            rewards = np.zeros((n_steps,), dtype=np.float32)
+        rewards = np.asarray(replay_buffer['rewards'], dtype=np.float32).reshape(-1)
 
         returns = np.zeros((n_steps,), dtype=np.float32)
         start = 0
@@ -439,6 +438,8 @@ class Sim2RealImageDataset(BaseImageDataset):
         if self.add_returns:
             torch_data['returns_to_go'] = torch.from_numpy(
                 data['returns_to_go'].astype(np.float32))
+            torch_data['rewards'] = torch.from_numpy(
+                data['rewards'].astype(np.float32))
         return torch_data
 
 

@@ -57,4 +57,5 @@ dataset:
   val_ratio: 0.05
   use_cache: false
   use_disk: false
+  action_norm_mode: ${action_norm_mode}
   # action_norm_mode: ${action_norm_mode}

@@ -67,4 +67,5 @@ dataset:
   use_disk: false
   add_returns: ${add_returns}
   gamma: ${gamma}
+  action_norm_mode: ${action_norm_mode}
   # action_norm_mode: ${action_norm_mode}

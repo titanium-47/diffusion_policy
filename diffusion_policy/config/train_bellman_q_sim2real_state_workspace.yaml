@@ -2,19 +2,19 @@ defaults:
   - _self_
   - task: sim2real_state_privledged
 
-name: train_q_image
-_target_: diffusion_policy.workspace.train_q_image_workspace.TrainQImageWorkspace
+name: train_bellman_q_image
+_target_: diffusion_policy.workspace.train_bellman_q_workspace.TrainBellmanQWorkspace
 output_dir: null
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "default"
 
-horizon: 12
+horizon: 19
 n_obs_steps: 4
 n_action_steps: 8
 n_latency_steps: 0
-dataset_obs_steps: ${n_obs_steps}
+dataset_obs_steps: ${horizon}
 gamma: 0.97
 action_norm_mode: gaussian
 add_returns: True
@@ -50,6 +50,11 @@ policy:
   value_hidden_dims: [512, 256, 128, 64]
   q_hidden_dims: [512, 256, 128, 64]
 
+task:
+  dataset:
+    n_obs_steps: ${dataset_obs_steps}
+    pad_after: 0
+
 dataloader:
   batch_size: 64
   num_workers: 8
@@ -68,13 +73,6 @@ val_dataloader:
   prefetch_factor: 4
   drop_last: False
 
-value_optimizer:
-  _target_: torch.optim.AdamW
-  lr: 1.0e-4
-  betas: [0.95, 0.999]
-  eps: 1.0e-8
-  weight_decay: 1.0e-6
-
 q_optimizer:
   _target_: torch.optim.AdamW
   lr: 1.0e-4
@@ -87,11 +85,9 @@ training:
   seed: 42
   debug: False
   resume: True
-  # Path to a workspace .ckpt with trained value (e.g. .../checkpoints/value_best.ckpt).
-  # Loads obs_encoder, value_head, and normalizer. Ignored when resume loads a checkpoint.
-  preload_value_checkpoint: null
-  value_epochs: 10
-  q_epochs: 10
+  epochs: 10
+  target_tau: 0.005
+  target_update_every: 1
   gradient_clip_norm: 1.0
   checkpoint_every: 50
   max_train_steps: null
@@ -99,7 +95,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: q_function_sim2real_image
+  project: bellman_q_function_sim2real_image
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
