@@ -56,6 +56,7 @@ run_job() {
         horizon="${hor}" \
         training.seed=42 \
         training.device="cuda:0" \
+        training.num_epochs=1250 \
         logging.project="${WANDB_PROJECT}" \
         logging.group="${config}" \
         exp_name="${exp}" \
